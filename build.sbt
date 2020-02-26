@@ -4,12 +4,12 @@ import sbt.Tests._
 import sbt.Keys._
 import sbt.nio.Keys._
 
-val sparkVersion = "2.4.3"
+val sparkVersion = "3.0.0-preview2"
 
-lazy val scala212 = "2.12.8"
-lazy val scala211 = "2.11.12"
+lazy val scala212 = "2.12.10"
+//lazy val scala211 = "2.11.12"
 
-ThisBuild / scalaVersion := scala211
+ThisBuild / scalaVersion := scala212
 ThisBuild / organization := "io.projectglow"
 ThisBuild / scalastyleConfig := baseDirectory.value / "scalastyle-config.xml"
 ThisBuild / publish / skip := true
@@ -161,7 +161,7 @@ lazy val coreDependencies = (providedSparkDependencies ++ testCoreDependencies +
 )).map(_.exclude("com.google.code.findbugs", "jsr305"))
 
 lazy val root = (project in file("."))
-  .aggregate(core_2_11, python_2_11, docs_2_11, core_2_12, python_2_12, docs_2_12)
+  .aggregate(core_2_12, python_2_12, docs_2_12)
 
 lazy val core = (project in file("core"))
   .settings(
@@ -175,18 +175,18 @@ lazy val core = (project in file("core"))
     Package.ManifestAttributes("Git-Release-Hash" -> currentGitHash(baseDirectory.value)),
     bintrayRepository := "glow",
     libraryDependencies ++= coreDependencies,
-    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "main" / "shim" / "2.4",
-    Test / unmanagedSourceDirectories += baseDirectory.value / "src" / "test" / "shim" / "2.4",
+    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "main" / "shim" / "3.0",
+    Test / unmanagedSourceDirectories += baseDirectory.value / "src" / "test" / "shim" / "3.0",
     functionsTemplate := baseDirectory.value / "functions.scala.TEMPLATE",
     generatedFunctionsOutput := (Compile / scalaSource).value / "io" / "projectglow" / "functions.scala",
     sourceGenerators in Compile += generateFunctions
   )
   .cross
 
-lazy val core_2_11 = core(scala211)
+/*lazy val core_2_11 = core(scala211)
   .settings(
     libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging-slf4j" % "2.1.2"
-  )
+  )*/
 
 lazy val core_2_12 = core(scala212)
   .settings(
@@ -239,7 +239,7 @@ lazy val python =
     .cross
     .dependsOn(core % "test->test")
 
-lazy val python_2_11 = python(scala211)
+//lazy val python_2_11 = python(scala211)
 lazy val python_2_12 = python(scala212)
 
 lazy val docs = (project in file("docs"))
@@ -260,7 +260,7 @@ lazy val docs = (project in file("docs"))
   .cross
   .dependsOn(core % "test->test", python)
 
-lazy val docs_2_11 = docs(scala211)
+//lazy val docs_2_11 = docs(scala211)
 lazy val docs_2_12 = docs(scala212)
 
 // Publish to Bintray
@@ -302,7 +302,7 @@ lazy val stagedRelease = (project in file("core/src/test"))
     commonSettings,
     resourceDirectory in Test := baseDirectory.value / "resources",
     scalaSource in Test := baseDirectory.value / "scala",
-    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / "2.4",
+    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / "3.0",
     libraryDependencies ++= testSparkDependencies ++ testCoreDependencies :+
     "io.projectglow" %% "glow" % stableVersion.value % "test",
     resolvers := Seq("bintray-staging" at "https://dl.bintray.com/projectglow/glow"),
@@ -315,7 +315,7 @@ lazy val stagedRelease = (project in file("core/src/test"))
   )
   .cross
 
-lazy val stagedRelease_2_11 = stagedRelease(scala211)
+//lazy val stagedRelease_2_11 = stagedRelease(scala211)
 lazy val stagedRelease_2_12 = stagedRelease(scala212)
 
 import ReleaseTransformations._
@@ -334,7 +334,7 @@ releaseProcess := Seq[ReleaseStep](
   commitStableVersion,
   tagRelease,
   publishArtifacts,
-  releaseStepCommandAndRemaining("stagedRelease_2_11/test"),
+  //releaseStepCommandAndRemaining("stagedRelease_2_11/test"),
   releaseStepCommandAndRemaining("stagedRelease_2_12/test"),
   setNextVersion,
   commitNextVersion
