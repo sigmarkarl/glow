@@ -27,7 +27,7 @@ object SparkShim extends SparkShimBase {
   override type UnivocityParser = org.apache.spark.sql.catalyst.csv.UnivocityParser
 
   override def wrapUnivocityParse(parser: UnivocityParser)(input: String): Option[InternalRow] = {
-    parser.parse(input)
+    Some(parser.parse(input))
   }
 
   // [SPARK-27328][SQL] Add 'deprecated' in ExpressionDescription for extended usage and SQL doc
