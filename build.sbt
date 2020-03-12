@@ -4,6 +4,7 @@ import sbt.Tests._
 import sbt.Keys._
 import sbt.nio.Keys._
 
+val sparkVersionMajorMinor = "3.0"
 val sparkVersion = "3.0.0-preview2"
 
 lazy val scala212 = "2.12.10"
@@ -176,8 +177,8 @@ lazy val core = (project in file("core"))
     Package.ManifestAttributes("Git-Release-Hash" -> currentGitHash(baseDirectory.value)),
     bintrayRepository := "glow",
     libraryDependencies ++= coreDependencies,
-    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "main" / "shim" / "3.0",
-    Test / unmanagedSourceDirectories += baseDirectory.value / "src" / "test" / "shim" / "3.0",
+    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "main" / "shim" / sparkVersionMajorMinor,
+    Test / unmanagedSourceDirectories += baseDirectory.value / "src" / "test" / "shim" / sparkVersionMajorMinor,
     functionsTemplate := baseDirectory.value / "functions.scala.TEMPLATE",
     generatedFunctionsOutput := (Compile / scalaSource).value / "io" / "projectglow" / "functions.scala",
     sourceGenerators in Compile += generateFunctions
@@ -303,7 +304,7 @@ lazy val stagedRelease = (project in file("core/src/test"))
     commonSettings,
     resourceDirectory in Test := baseDirectory.value / "resources",
     scalaSource in Test := baseDirectory.value / "scala",
-    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / "3.0",
+    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / sparkVersionMajorMinor,
     libraryDependencies ++= testSparkDependencies ++ testCoreDependencies :+
     "io.projectglow" %% "glow" % stableVersion.value % "test",
     resolvers := Seq("bintray-staging" at "https://dl.bintray.com/projectglow/glow"),
