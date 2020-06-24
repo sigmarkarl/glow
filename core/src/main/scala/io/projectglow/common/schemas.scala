@@ -18,7 +18,6 @@ package io.projectglow.common
 
 import org.apache.spark.sql.Encoders
 import org.apache.spark.sql.catalyst.ScalaReflection
-import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.types._
 
 object VariantSchemas {
@@ -141,6 +140,74 @@ object VariantSchemas {
   def plinkSchema(hasSampleIds: Boolean): StructType = {
     StructType(plinkBaseSchema :+ plinkGenotypeSchema(hasSampleIds))
   }
+
+  // BlockedGT Fields
+  val headerField = StructField("header", StringType)
+  val sizeField = StructField("size", IntegerType)
+  val valuesField = StructField("values", ArrayType(DoubleType))
+  val headerBlockIdField = StructField("header_block", StringType)
+  val sampleBlockIdField = StructField("sample_block", StringType)
+  val sortKeyField = StructField("sort_key", LongType)
+  val meanField = StructField("mu", DoubleType)
+  val stdDevField = StructField("sig", DoubleType)
+}
+
+object FeatureSchemas {
+  // GFF fields
+  val seqIdField = StructField("seqId", StringType)
+  val sourceField = StructField("source", StringType)
+  val typeField = StructField("type", StringType)
+  val startField = StructField("start", LongType)
+  val endField = StructField("end", LongType)
+  val scoreField = StructField("score", DoubleType)
+  val strandField = StructField("strand", StringType)
+  val phaseField = StructField("phase", IntegerType)
+  val attributesField = StructField("attributes", StringType)
+
+  // GFF3 tags (names are in all lower case for correct column ordering by the reader)
+  val idField = StructField("id", StringType)
+  val nameField = StructField("name", StringType)
+  val aliasField = StructField("alias", ArrayType(StringType))
+  val parentField = StructField("parent", ArrayType(StringType))
+  val targetField = StructField("target", StringType)
+  val gapField = StructField("gap", StringType)
+  val derivesFromField = StructField("derivesfrom", StringType)
+  val noteField = StructField("note", ArrayType(StringType))
+  val dbxrefField = StructField("dbxref", ArrayType(StringType))
+  val ontologyTermField = StructField("ontologyterm", ArrayType(StringType))
+  val isCircularField = StructField("iscircular", BooleanType)
+
+  // GTF specific tags
+  val geneIdField = StructField("geneId", StringType)
+  val transcriptIdField = StructField("transcriptId", StringType)
+
+  val gffBaseSchema = StructType(
+    Seq(
+      seqIdField,
+      sourceField,
+      typeField,
+      startField,
+      endField,
+      scoreField,
+      strandField,
+      phaseField,
+      attributesField
+    )
+  )
+
+  val gffOfficialAttributeFields = Seq(
+    idField,
+    nameField,
+    aliasField,
+    parentField,
+    targetField,
+    gapField,
+    derivesFromField,
+    noteField,
+    dbxrefField,
+    ontologyTermField,
+    isCircularField
+  )
 }
 
 case class GenotypeFields(
@@ -199,9 +266,6 @@ object VCFRow {
     .schemaFor[VCFRow]
     .dataType
     .asInstanceOf[StructType]
-  lazy val encoder: ExpressionEncoder[VCFRow] = Encoders
-    .product[VCFRow]
-    .asInstanceOf[ExpressionEncoder[VCFRow]]
 }
 
 private[projectglow] case class BgenGenotype(

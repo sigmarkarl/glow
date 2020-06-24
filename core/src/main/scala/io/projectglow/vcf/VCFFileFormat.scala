@@ -32,21 +32,19 @@ import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.hadoop.io.Text
 import org.apache.hadoop.io.compress.{CodecPool, CompressionCodecFactory, SplittableCompressionCodec}
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
+
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SQLUtils, SparkSession}
 import org.apache.spark.sql.catalyst.util.CompressionCodecs
 import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.sources.{DataSourceRegister, Filter}
 import org.apache.spark.sql.types._
-import org.broadinstitute.hellbender.tools.walkers.genotyper.GenotypeAssignmentMethod
-import org.broadinstitute.hellbender.utils.SimpleInterval
-import org.broadinstitute.hellbender.utils.variant.GATKVariantContextUtils
 import org.seqdoop.hadoop_bam.util.{BGZFEnhancedGzipCodec, DatabricksBGZFOutputStream}
-
 import io.projectglow.common.logging.{HlsEventRecorder, HlsTagValues}
-import io.projectglow.common.{CommonOptions, GlowLogging, VCFOptions, VCFRow, WithUtils}
+import io.projectglow.common.{CommonOptions, GlowLogging, SimpleInterval, VCFOptions, VariantSchemas, WithUtils}
 import io.projectglow.sql.util.{BGZFCodec, ComDatabricksDataSource, HadoopLineIterator, SerializableConfiguration}
+import io.projectglow.transformers.splitmultiallelics.SplitMultiallelicsTransformer
 
 class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with HlsEventRecorder {
   var codecFactory: CompressionCodecFactory = _
@@ -85,7 +83,7 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
       job: Job,
       options: Map[String, String],
       dataSchema: StructType): OutputWriterFactory = {
-
+    VCFFileFormat.requireWritableAsVCF(dataSchema)
     options.get(VCFOptions.COMPRESSION).foreach { compressionOption =>
       if (codecFactory == null) {
         codecFactory =
@@ -113,6 +111,13 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
       options: Map[String, String],
       hadoopConf: Configuration): PartitionedFile => Iterator[InternalRow] = {
 
+    if (options.get(VCFOptions.SPLIT_TO_BIALLELIC).exists(_.toBoolean)) {
+      throw new IllegalArgumentException(
+        s"""VCF reader does not support the "${VCFOptions.SPLIT_TO_BIALLELIC}" option anymore.""" +
+        s"To split multiallelic variants use the ${SplitMultiallelicsTransformer.SPLITTER_TRANSFORMER_NAME} transformer after reading the VCF."
+      )
+    }
+
     val useFilterParser = options.get(VCFOptions.USE_FILTER_PARSER).forall(_.toBoolean)
     val useIndex = options.get(VCFOptions.USE_TABIX_INDEX).forall(_.toBoolean)
 
@@ -125,9 +130,6 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
       CommonOptions.INCLUDE_SAMPLE_IDS -> options
         .get(CommonOptions.INCLUDE_SAMPLE_IDS)
         .forall(_.toBoolean),
-      VCFOptions.SPLIT_TO_BIALLELIC -> options
-        .get(VCFOptions.SPLIT_TO_BIALLELIC)
-        .exists(_.toBoolean),
       VCFOptions.USE_FILTER_PARSER -> useFilterParser,
       VCFOptions.USE_TABIX_INDEX -> useIndex
     )
@@ -150,11 +152,6 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
       val path = new Path(partitionedFile.filePath)
       val hadoopFs = path.getFileSystem(serializableConf.value)
 
-      // In case of a partitioned file that only contains part of the header, codec.readActualHeader
-      // will throw an error for a malformed header. We therefore allow the header reader to read
-      // past the boundaries of the partitions; it will throw/return when done reading the header.
-      val (header, codec) = VCFFileFormat.createVCFCodec(path.toString, serializableConf.value)
-
       // Get the file offset=(startPos,endPos) that must be read from this partitionedFile.
       // Currently only one offset is generated for each partitionedFile.
       val offset = TabixIndexHelper.getFileRangeToRead(
@@ -171,6 +168,11 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
           // Filter parser has detected that the filter conditions yield an empty set of results.
           Iterator.empty
         case Some((startPos, endPos)) =>
+          // In case of a partitioned file that only contains part of the header, codec.readActualHeader
+          // will throw an error for a malformed header. We therefore allow the header reader to read
+          // past the boundaries of the partitions; it will throw/return when done reading the header.
+          val (header, codec) = VCFFileFormat.createVCFCodec(path.toString, serializableConf.value)
+
           // Modify the start and end of reader according to the offset provided by
           // tabixIndexHelper.filteredVariantBlockRange
           val reader = new HadoopLineIterator(
@@ -192,7 +194,8 @@ class VCFFileFormat extends TextBasedFileFormat with DataSourceRegister with Hls
             .toRows(
               header,
               requiredSchema,
-              VCFIteratorDelegate.makeDelegate(options, reader, codec, filteredSimpleInterval.get))
+              new VCFIterator(reader, codec, filteredSimpleInterval.get)
+            )
       }
     }
 
@@ -273,26 +276,30 @@ object VCFFileFormat {
       false
     }
   }
-}
 
-case class VariantContextWrapper(vc: VariantContext, splitFromMultiallelic: Boolean)
-
-private object VCFIteratorDelegate {
-  def makeDelegate(
-      options: Map[String, String],
-      lineReader: Iterator[Text],
-      codec: VCFCodec,
-      filteredSimpleInterval: SimpleInterval): AbstractVCFIterator = {
-    if (options.get(VCFOptions.SPLIT_TO_BIALLELIC).exists(_.toBoolean)) {
-      new SplitVCFIterator(new VCFIterator(lineReader, codec, filteredSimpleInterval))
+  def requireWritableAsVCF(schema: StructType): Unit = {
+    val baseRequiredFields =
+      Seq(
+        VariantSchemas.contigNameField,
+        VariantSchemas.startField,
+        VariantSchemas.refAlleleField,
+        VariantSchemas.endField)
+    val requiredFields = if (schema.exists(_.name == VariantSchemas.genotypesFieldName)) {
+      baseRequiredFields :+ VariantSchemas.alternateAllelesField
     } else {
-      new VCFIterator(lineReader, codec, filteredSimpleInterval)
+      baseRequiredFields
+    }
+
+    val missingFields = requiredFields
+      .filter(f => !schema.exists(SQLUtils.structFieldsEqualExceptNullability(_, f)))
+    if (missingFields.nonEmpty) {
+      throw SQLUtils
+        .newAnalysisException(s"Cannot write as VCF. Missing required fields: $requiredFields")
     }
   }
 }
 
-private[vcf] abstract class AbstractVCFIterator(codec: VCFCodec)
-    extends Iterator[VariantContextWrapper] {
+private[vcf] abstract class AbstractVCFIterator(codec: VCFCodec) extends Iterator[VariantContext] {
 
   def parseLine(line: String): VariantContext = {
     try {
@@ -333,13 +340,13 @@ private[vcf] class VCFIterator(
     nextVC != null
   }
 
-  override def next(): VariantContextWrapper = {
+  override def next(): VariantContext = {
     if (nextVC == null) {
       throw new NoSuchElementException("Called next on empty iterator")
     }
     val retVC = nextVC
     nextVC = findNextVC()
-    VariantContextWrapper(retVC, false)
+    retVC
   }
 
   /** Finds next VC that satisfies the filteredInterval. As genotype data is lazily loaded, this
@@ -365,7 +372,7 @@ private[vcf] class VCFIterator(
       // being queried or filter parser being disabled by the user.
       true
     } else {
-      val vcInterval = new SimpleInterval(vc.getContig, vc.getStart, vc.getEnd)
+      val vcInterval = SimpleInterval(vc.getContig, vc.getStart, vc.getEnd)
       overlapDetector.overlapsAny(vcInterval)
     }
   }
@@ -374,66 +381,13 @@ private[vcf] class VCFIterator(
 
 }
 
-private[vcf] class SplitVCFIterator(baseIterator: VCFIterator)
-    extends AbstractVCFIterator(baseIterator.getCodec)
-    with GlowLogging {
-
-  private var isSplit: Boolean = false
-  private var nextVC: VariantContext = _ // nextVC always holds the nextVC to be passed by the
-  // iterator.
-  private var nextVCs: Iterator[VariantContext] = Iterator.empty
-
-  // Initialize
-  nextVC = findNextBiallelicVC()
-
-  override def hasNext: Boolean = {
-    nextVC != null
-  }
-
-  override def next(): VariantContextWrapper = {
-    if (nextVC == null) {
-      throw new NoSuchElementException("Called next on empty iterator")
-    }
-    val (retVC, retSplit) = (nextVC, isSplit)
-    nextVC = findNextBiallelicVC()
-    VariantContextWrapper(retVC, retSplit)
-  }
-
-  /**
-   * Finds next biallelic VC using base Iterator
-   */
-  private def findNextBiallelicVC(): VariantContext = {
-
-    var nextBiallelicVC: VariantContext = null
-
-    if (nextVCs.hasNext) {
-      nextBiallelicVC = nextVCs.next()
-    } else if (!baseIterator.hasNext) {
-      nextBiallelicVC = null
-    } else {
-      nextBiallelicVC = baseIterator.next().vc
-      val htsjdkVcList =
-        GATKVariantContextUtils.splitVariantContextToBiallelics(
-          nextBiallelicVC,
-          /* trimLeft */ true,
-          GenotypeAssignmentMethod.BEST_MATCH_TO_ORIGINAL,
-          /* keepOriginalChrCounts */ false
-        )
-      isSplit = htsjdkVcList.size() > 1
-      nextVCs = htsjdkVcList.asScala.toIterator
-      nextBiallelicVC = nextVCs.next()
-    }
-    nextBiallelicVC
-  }
-}
-
 private[vcf] sealed trait SchemaDelegate {
   def schema(sparkSession: SparkSession, files: Seq[FileStatus]): StructType
 
   def toRows(
       header: VCFHeader,
       requiredSchema: StructType,
-      iterator: Iterator[VariantContextWrapper]): Iterator[InternalRow]
+      iterator: Iterator[VariantContext]): Iterator[InternalRow]
 }
 
 /**
@@ -444,9 +398,7 @@ private[vcf] object SchemaDelegate {
   def makeDelegate(options: Map[String, String]): SchemaDelegate = {
     val stringency = VCFOptionParser.getValidationStringency(options)
     val includeSampleId = options.get(CommonOptions.INCLUDE_SAMPLE_IDS).forall(_.toBoolean)
-    if (options.get(VCFOptions.VCF_ROW_SCHEMA).exists(_.toBoolean)) {
-      new VCFRowSchemaDelegate(stringency, includeSampleId)
-    } else if (options.get(VCFOptions.FLATTEN_INFO_FIELDS).forall(_.toBoolean)) {
+    if (options.get(VCFOptions.FLATTEN_INFO_FIELDS).forall(_.toBoolean)) {
       new FlattenedInfoDelegate(includeSampleId, stringency)
     } else {
       new NormalDelegate(includeSampleId, stringency)
@@ -459,35 +411,13 @@ private[vcf] object SchemaDelegate {
     val infoHeaderLines = ArrayBuffer[VCFInfoHeaderLine]()
     val formatHeaderLines = ArrayBuffer[VCFFormatHeaderLine]()
     VCFHeaderUtils
-      .readHeaderLines(spark, files.map(_.getPath.toString))
+      .readHeaderLines(spark, files.map(_.getPath.toString), getNonSchemaHeaderLines = false)
       .foreach {
         case i: VCFInfoHeaderLine => infoHeaderLines += i
         case f: VCFFormatHeaderLine => formatHeaderLines += f
         case _ => // Don't do anything with other header lines
       }
     (infoHeaderLines, formatHeaderLines)
-  }
-
-  private class VCFRowSchemaDelegate(stringency: ValidationStringency, includeSampleIds: Boolean)
-      extends SchemaDelegate {
-    override def schema(sparkSession: SparkSession, files: Seq[FileStatus]): StructType = {
-      ScalaReflection.schemaFor[VCFRow].dataType.asInstanceOf[StructType]
-    }
-
-    override def toRows(
-        header: VCFHeader,
-        requiredSchema: StructType,
-        iterator: Iterator[VariantContextWrapper]): Iterator[InternalRow] = {
-      val converter = new VariantContextToInternalRowConverter(
-        header,
-        requiredSchema,
-        stringency,
-        writeSampleIds = includeSampleIds
-      )
-      iterator.map { vc =>
-        converter.convertRow(vc.vc, vc.splitFromMultiallelic)
-      }
-    }
   }
 
   private class NormalDelegate(includeSampleIds: Boolean, stringency: ValidationStringency)
@@ -500,10 +430,10 @@ private[vcf] object SchemaDelegate {
     override def toRows(
         header: VCFHeader,
         requiredSchema: StructType,
-        iterator: Iterator[VariantContextWrapper]): Iterator[InternalRow] = {
+        iterator: Iterator[VariantContext]): Iterator[InternalRow] = {
       val converter = new VariantContextToInternalRowConverter(header, requiredSchema, stringency)
       iterator.map { vc =>
-        converter.convertRow(vc.vc, vc.splitFromMultiallelic)
+        converter.convertRow(vc, false)
       }
     }
   }
@@ -519,11 +449,11 @@ private[vcf] object SchemaDelegate {
     override def toRows(
         header: VCFHeader,
         requiredSchema: StructType,
-        iterator: Iterator[VariantContextWrapper]): Iterator[InternalRow] = {
+        iterator: Iterator[VariantContext]): Iterator[InternalRow] = {
 
       val converter = new VariantContextToInternalRowConverter(header, requiredSchema, stringency)
       iterator.map { vc =>
-        converter.convertRow(vc.vc, vc.splitFromMultiallelic)
+        converter.convertRow(vc, false)
       }
     }
   }

@@ -27,10 +27,9 @@ import org.apache.spark.{SparkException, TaskContext}
 
 import io.projectglow.Glow
 import io.projectglow.common.VCFRow
-import io.projectglow.sql.GlowBaseTest
 import io.projectglow.transformers.pipe.ProcessHelper
 
-class VCFPiperSuite extends GlowBaseTest {
+class VCFPiperSuite extends VCFConverterBaseTest {
   lazy val sess = spark
   private val na12878 = s"$testDataHome/NA12878_21_10002403.vcf"
   private val TGP = s"$testDataHome/1000genomes-phase3-1row.vcf"
@@ -149,10 +148,11 @@ class VCFPiperSuite extends GlowBaseTest {
 
     val options = baseTextOptions ++ Map(
         "cmd" -> """["wc", "-l"]""",
-        "in_vcfHeader" -> na12878
+        "inVcfHeader" -> na12878
       )
     val output = Glow.transform("pipe", df, options)
-    assert(output.count() == 8)
+    assert(output.count() == 4)
+    assert(output.rdd.getNumPartitions == 8)
   }
 
   test("empty partition and missing samples") {
@@ -160,7 +160,14 @@ class VCFPiperSuite extends GlowBaseTest {
     assert(df.count == 4)
 
     val options = baseTextOptions ++ Map("cmd" -> """["wc", "-l"]""", "in_vcf_header" -> "infer")
-    assertThrows[SparkException](Glow.transform("pipe", df, options))
+    val output = Glow.transform("pipe", df, options)
+
+    import sess.implicits._
+    val outputStrs =
+      output.selectExpr("cast(trim(text) as int) as num_lines").as[Int].collect().toSeq
+    // Inferred header contains 23 rows, and each partition contains 1 row with data
+    assert(outputStrs == Seq(24, 24, 24, 24))
+    assert(output.rdd.getNumPartitions == 8)
   }
 
   test("stdin and stderr threads are cleaned up for successful commands") {
@@ -174,15 +181,13 @@ class VCFPiperSuite extends GlowBaseTest {
     assert(ex.getMessage.contains("No such file or directory"))
   }
 
-  test("header only") {
+  test("no rows") {
     val df = readVcf(na12878).limit(0)
-    val options = Map(
-      "inputFormatter" -> "vcf",
-      "outputFormatter" -> "text",
-      "in_vcfHeader" -> na12878,
-      "cmd" -> s"""["cat", "-"]""")
-    val output = Glow.transform("pipe", df, options)
-    assert(output.count == 28)
+    val options = baseTextOptions ++ Map("inVcfHeader" -> na12878, "cmd" -> s"""["cat", "-"]""")
+    val ex = intercept[IllegalStateException] {
+      Glow.transform("pipe", df, options)
+    }
+    assert(ex.getMessage.contains("Cannot infer schema: saw 0 distinct schemas"))
   }
 
   test("task context is defined in each thread") {
@@ -191,8 +196,7 @@ class VCFPiperSuite extends GlowBaseTest {
     val input = spark
       .read
       .format("vcf")
-      .option("includeSampleIds", "true")
-      .option("vcfRowSchema", "true")
+      .schema(VCFRow.schema)
       .load(na12878)
       .as[VCFRow]
     val df = input.map { el =>
@@ -203,7 +207,7 @@ class VCFPiperSuite extends GlowBaseTest {
     val options = Map(
       "inputFormatter" -> "vcf",
       "outputFormatter" -> "vcf",
-      "in_vcfHeader" -> na12878,
+      "inVcfHeader" -> na12878,
       "cmd" -> s"""["cat", "-"]""")
     val output = Glow.transform("pipe", df, options)
     assert(output.count() == 4)
@@ -212,17 +216,18 @@ class VCFPiperSuite extends GlowBaseTest {
   test("missing sample names") {
     import sess.implicits._
 
-    val inputDf = spark
-      .read
-      .option("includeSampleIds", "false")
-      .option("vcfRowSchema", "true")
-      .format("vcf")
-      .load(TGP)
+    val inputDf = setMissingSampleIds(
+      spark
+        .read
+        .schema(VCFRow.schema)
+        .format("vcf")
+        .load(TGP)
+    )
 
     val options = Map(
       "inputFormatter" -> "vcf",
       "outputFormatter" -> "vcf",
-      "in_vcfHeader" -> "infer",
+      "inVcfHeader" -> "infer",
       "cmd" -> s"""["cat", "-"]"""
     )
     val outputDf = Glow.transform("pipe", inputDf.toDF, options)
@@ -273,7 +278,7 @@ class VCFPiperSuite extends GlowBaseTest {
     val inputDf = spark
       .read
       .format("vcf")
-      .load(TGP)
+      .load(na12878)
 
     val options = Map(
       "inputFormatter" -> "vcf",
@@ -282,8 +287,11 @@ class VCFPiperSuite extends GlowBaseTest {
       "outValidationStringency" -> "STRICT",
       "cmd" -> s"""["cat", "$file"]"""
     )
-    val e = intercept[SparkException](Glow.transform("pipe", inputDf, options))
-    assert(e.getCause.isInstanceOf[IllegalArgumentException])
+    val ex = intercept[SparkException] {
+      Glow.transform("pipe", inputDf, options)
+    }
+    assert(ex.getCause.isInstanceOf[IllegalArgumentException])
+    assert(ex.getMessage.contains("Could not parse INFO field AC"))
   }
 
   test("throw if input formatter fails") {
@@ -304,6 +312,19 @@ class VCFPiperSuite extends GlowBaseTest {
     val e = intercept[SparkException](Glow.transform("pipe", inputDf, options))
     assert(e.getCause.isInstanceOf[IllegalArgumentException])
     assert(e.getCause.getMessage.contains("Could not build variant context: Contig cannot be null"))
+  }
+
+  test("pass command as a Seq") {
+    val inputDf = readVcf(TGP)
+    val options = Map(
+      "inputFormatter" -> "vcf",
+      "outputFormatter" -> "vcf",
+      "inVcfHeader" -> "infer",
+      "cmd" -> Seq("cat", "-u", "-s"))
+    val outputDf = Glow.transform("pipe", inputDf, options)
+    val inputRows = inputDf.collect().toSeq
+    val outputRows = outputDf.collect().toSeq
+    assert(inputRows == outputRows)
   }
 }
 

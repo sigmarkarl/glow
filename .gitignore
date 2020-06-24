@@ -18,6 +18,9 @@ maven-repo/
 **/__pycache__
 *.pyc
 
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
 # Sphinx documentation
 docs/build
 
@@ -34,4 +37,4 @@ core-test-names.log
 unit-tests.log
 
 # Test artifacts
-Miniconda3-latest-Linux-x86_64.sh
+Miniconda3*.sh

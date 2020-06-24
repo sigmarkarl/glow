@@ -12,10 +12,12 @@ enabling seamless manipulation, filtering, quality control and transformation be
    :maxdepth: 2
 
    variant-data
+   gff
    vcf2delta
    variant-qc
    sample-qc
    lift-over
    variant-normalization
    variant-splitter
+   merge
    utility-functions

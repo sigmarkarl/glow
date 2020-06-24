@@ -1,16 +1,25 @@
 import scala.sys.process._
 
+import complete.DefaultParsers._
+import org.apache.commons.lang3.StringUtils
 import sbt.Tests._
 import sbt.Keys._
+import sbt.librarymanagement.ModuleID
 import sbt.nio.Keys._
 
-val sparkVersionMajorMinor = "3.0"
-val sparkVersion = "3.0.0-preview2"
+lazy val scala212 = "2.12.8"
+lazy val scala211 = "2.11.12"
 
-lazy val scala212 = "2.12.10"
-//lazy val scala211 = "2.11.12"
+lazy val sparkVersion = sys.env.getOrElse("SPARK_VERSION", "3.0.0")
 
-ThisBuild / scalaVersion := scala212
+def majorMinorVersion(version: String): String = {
+  StringUtils.ordinalIndexOf(version, ".", 3) match {
+    case StringUtils.INDEX_NOT_FOUND => version
+    case i => version.take(i)
+  }
+}
+
+ThisBuild / scalaVersion := sys.env.getOrElse("SCALA_VERSION", scala212)
 ThisBuild / organization := "io.projectglow"
 ThisBuild / scalastyleConfig := baseDirectory.value / "scalastyle-config.xml"
 ThisBuild / publish / skip := true
@@ -39,6 +48,7 @@ def groupByHash(tests: Seq[TestDefinition]): Seq[Tests.Group] = {
       case (i, groupTests) =>
         val options = ForkOptions()
           .withRunJVMOptions(Vector("-Dspark.ui.enabled=false", "-Xmx1024m"))
+
         Group(i.toString, groupTests, SubProcess(options))
     }
     .toSeq
@@ -77,6 +87,7 @@ ThisBuild / generatorScript := (ThisBuild / baseDirectory).value / "python" / "r
 lazy val generatedFunctionsOutput = settingKey[File]("generatedFunctionsOutput")
 lazy val functionsTemplate = settingKey[File]("functionsTemplate")
 lazy val generateFunctions = taskKey[Seq[File]]("generateFunctions")
+lazy val pytest = inputKey[Unit]("pytest")
 
 def runCmd(args: File*): Unit = {
   args.map(_.getPath).!!
@@ -119,51 +130,27 @@ lazy val coreDependencies = (providedSparkDependencies ++ testCoreDependencies +
   "org.slf4j" % "slf4j-api" % "1.7.25",
   "org.slf4j" % "slf4j-log4j12" % "1.7.25",
   "org.jdbi" % "jdbi" % "2.63.1",
-  // Exclude extraneous GATK dependencies
-  ("org.broadinstitute" % "gatk" % "4.0.11.0")
-    .exclude("biz.k11i", "xgboost-predictor")
-    .exclude("com.esotericsoftware", "kryo")
-    .exclude("com.esotericsoftware", "reflectasm")
-    .exclude("com.github.jsr203hadoop", "jsr203hadoop")
-    .exclude("com.google.cloud", "google-cloud-nio")
-    .exclude("com.google.cloud.bigdataoss", "gcs-connector")
-    .exclude("com.intel", "genomicsdb")
-    .exclude("com.intel.gkl", "gkl")
-    .exclude("com.opencsv", "opencsv")
-    .exclude("commons-io", "commons-io")
-    .exclude("gov.nist.math.jama", "gov.nist.math.jama")
-    .exclude("it.unimi.dsi", "fastutil")
-    .exclude("org.aeonbits.owner", "owner")
-    .exclude("org.apache.commons", "commons-lang3")
-    .exclude("org.apache.commons", "commons-math3")
-    .exclude("org.apache.commons", "commons-collections4")
-    .exclude("org.apache.commons", "commons-vfs2")
-    .exclude("org.apache.hadoop", "hadoop-client")
-    .exclude("org.apache.spark", s"spark-mllib_2.11")
-    .exclude("org.bdgenomics.adam", s"adam-core-spark2_2.11")
-    .exclude("org.broadinstitute", "barclay")
-    .exclude("org.broadinstitute", "hdf5-java-bindings")
-    .exclude("org.broadinstitute", "gatk-native-bindings")
-    .exclude("org.broadinstitute", "gatk-bwamem-jni")
-    .exclude("org.broadinstitute", "gatk-fermilite-jni")
-    .exclude("org.jgrapht", "jgrapht-core")
-    .exclude("org.objenesis", "objenesis")
-    .exclude("org.ojalgo", "ojalgo")
-    .exclude("org.ojalgo", "ojalgo-commons-math3")
-    .exclude("org.reflections", "reflections")
-    .exclude("org.seqdoop", "hadoop-bam")
-    .exclude("org.xerial", "sqlite-jdbc")
-    .exclude("com.github.fommil.netlib", "*"),
+  "com.github.broadinstitute" % "picard" % "2.21.9",
   // Fix versions of libraries that are depended on multiple times
   "org.apache.hadoop" % "hadoop-client" % "2.7.3",
   "io.netty" % "netty" % "3.9.9.Final",
   "io.netty" % "netty-all" % "4.1.17.Final",
-  "com.github.samtools" % "htsjdk" % "2.20.3",
+  "com.github.samtools" % "htsjdk" % "2.21.2",
   "org.yaml" % "snakeyaml" % "1.16"
 )).map(_.exclude("com.google.code.findbugs", "jsr305"))
 
-lazy val root = (project in file("."))
-  .aggregate(core_2_12, python_2_12, docs_2_12)
+lazy val root = (project in file(".")).aggregate(core, python, docs)
+
+lazy val scalaLoggingDependency = settingKey[ModuleID]("scalaLoggingDependency")
+ThisBuild / scalaLoggingDependency := {
+  (ThisBuild / scalaVersion).value match {
+    case `scala211` => "com.typesafe.scala-logging" %% "scala-logging-slf4j" % "2.1.2"
+    case `scala212` => "com.typesafe.scala-logging" %% "scala-logging" % "3.7.2"
+    case _ =>
+      throw new IllegalArgumentException(
+        "Only supported Scala versions are: " + Seq(scala211, scala212))
+  }
+}
 
 lazy val core = (project in file("core"))
   .settings(
@@ -176,23 +163,14 @@ lazy val core = (project in file("core"))
     packageOptions in (Compile, packageBin) +=
     Package.ManifestAttributes("Git-Release-Hash" -> currentGitHash(baseDirectory.value)),
     bintrayRepository := "glow",
-    libraryDependencies ++= coreDependencies,
-    Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "main" / "shim" / sparkVersionMajorMinor,
-    Test / unmanagedSourceDirectories += baseDirectory.value / "src" / "test" / "shim" / sparkVersionMajorMinor,
+    libraryDependencies ++= coreDependencies :+ scalaLoggingDependency.value,
+    Compile / unmanagedSourceDirectories +=
+    baseDirectory.value / "src" / "main" / "shim" / majorMinorVersion(sparkVersion),
+    Test / unmanagedSourceDirectories +=
+    baseDirectory.value / "src" / "test" / "shim" / majorMinorVersion(sparkVersion),
     functionsTemplate := baseDirectory.value / "functions.scala.TEMPLATE",
     generatedFunctionsOutput := (Compile / scalaSource).value / "io" / "projectglow" / "functions.scala",
     sourceGenerators in Compile += generateFunctions
-  )
-  .cross
-
-/*lazy val core_2_11 = core(scala211)
-  .settings(
-    libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging-slf4j" % "2.1.2"
-  )*/
-
-lazy val core_2_12 = core(scala212)
-  .settings(
-    libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging" % "3.7.2"
   )
 
 /**
@@ -216,8 +194,45 @@ lazy val pythonSettings = Seq(
   sparkClasspath := (fullClasspath in Test).value.files.map(_.getCanonicalPath).mkString(":"),
   sparkHome := (ThisBuild / baseDirectory).value.absolutePath,
   pythonPath := ((ThisBuild / baseDirectory).value / "python").absolutePath,
-  publish / skip := true
+  publish / skip := true,
+  pytest := {
+    val args = spaceDelimited("<arg>").parsed
+    val baseEnv = Seq(
+      "SPARK_CLASSPATH" -> sparkClasspath.value,
+      "SPARK_HOME" -> sparkHome.value,
+      "PYTHONPATH" -> pythonPath.value
+    )
+    val env = if (majorMinorVersion(sparkVersion) >= "3.0") {
+      baseEnv :+ "PYSPARK_ROW_FIELD_SORTING_ENABLED" -> "true"
+    } else {
+      baseEnv :+ "ARROW_PRE_0_15_IPC_FORMAT" -> "1"
+    }
+    val ret = Process(
+      Seq("pytest") ++ args,
+      None,
+      env: _*
+    ).!
+    require(ret == 0, "Python tests failed")
+  }
 )
+
+lazy val yapf = inputKey[Unit]("yapf")
+ThisBuild / yapf := {
+  val args = spaceDelimited("<arg>").parsed
+  val ret = Process(
+    Seq("yapf") ++ args ++ Seq(
+      "--style",
+      "python/.style.yapf",
+      "--recursive",
+      "--exclude",
+      "python/glow/functions.py",
+      "python")
+  ).!
+  require(ret == 0, "Python style tests failed")
+}
+
+val yapfAll = taskKey[Unit]("Execute the yapf task in-place for all Python files.")
+ThisBuild / yapfAll := yapf.toTask(" --in-place").value
 
 lazy val python =
   (project in file("python"))
@@ -225,45 +240,23 @@ lazy val python =
       pythonSettings,
       functionGenerationSettings,
       test in Test := {
-        // Pass the test classpath to pyspark so that we run the same bits as the Scala tests
-        val ret = Process(
-          Seq("pytest", "--doctest-modules", "python"),
-          None,
-          "SPARK_CLASSPATH" -> sparkClasspath.value,
-          "SPARK_HOME" -> sparkHome.value
-        ).!
-        require(ret == 0, "Python tests failed")
+        yapf.toTask(" --diff").value
+        pytest.toTask(" --doctest-modules python").value
       },
       generatedFunctionsOutput := baseDirectory.value / "glow" / "functions.py",
       functionsTemplate := baseDirectory.value / "glow" / "functions.py.TEMPLATE",
       sourceGenerators in Compile += generateFunctions
     )
-    .cross
     .dependsOn(core % "test->test")
-
-//lazy val python_2_11 = python(scala211)
-lazy val python_2_12 = python(scala212)
 
 lazy val docs = (project in file("docs"))
   .settings(
     pythonSettings,
     test in Test := {
-      // Pass the test classpath to pyspark so that we run the same bits as the Scala tests
-      val ret = Process(
-        Seq("pytest", "docs"),
-        None,
-        "SPARK_CLASSPATH" -> sparkClasspath.value,
-        "SPARK_HOME" -> sparkHome.value,
-        "PYTHONPATH" -> pythonPath.value
-      ).!
-      require(ret == 0, "Docs tests failed")
+      pytest.toTask(" docs").value
     }
   )
-  .cross
   .dependsOn(core % "test->test", python)
-
-//lazy val docs_2_11 = docs(scala211)
-lazy val docs_2_12 = docs(scala212)
 
 // Publish to Bintray
 ThisBuild / description := "An open-source toolkit for large-scale genomic analysis"
@@ -304,7 +297,8 @@ lazy val stagedRelease = (project in file("core/src/test"))
     commonSettings,
     resourceDirectory in Test := baseDirectory.value / "resources",
     scalaSource in Test := baseDirectory.value / "scala",
-    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / sparkVersionMajorMinor,
+    unmanagedSourceDirectories in Test += baseDirectory.value / "shim" / majorMinorVersion(
+      sparkVersion),
     libraryDependencies ++= testSparkDependencies ++ testCoreDependencies :+
     "io.projectglow" %% "glow" % stableVersion.value % "test",
     resolvers := Seq("bintray-staging" at "https://dl.bintray.com/projectglow/glow"),
@@ -315,29 +309,37 @@ lazy val stagedRelease = (project in file("core/src/test"))
       .SettingKeys
       .sbtIdeaIgnoreModule := true // Do not import this SBT project into IDEA
   )
-  .cross
-
-//lazy val stagedRelease_2_11 = stagedRelease(scala211)
-lazy val stagedRelease_2_12 = stagedRelease(scala212)
 
 import ReleaseTransformations._
 
 // Don't use sbt-release's cross facility	
 releaseCrossBuild := false
 
+def crossReleaseStep(step: ReleaseStep): Seq[ReleaseStep] = {
+  Seq(
+    releaseStepCommandAndRemaining(s"""set ThisBuild / scalaVersion := "$scala211""""),
+    step,
+    releaseStepCommandAndRemaining(s"""set ThisBuild / scalaVersion := "$scala212""""),
+    step
+  )
+}
+
 releaseProcess := Seq[ReleaseStep](
-  checkSnapshotDependencies,
-  inquireVersions,
-  runClean,
-  runTest,
-  setReleaseVersion,
-  updateStableVersion,
-  commitReleaseVersion,
-  commitStableVersion,
-  tagRelease,
-  publishArtifacts,
-  //releaseStepCommandAndRemaining("stagedRelease_2_11/test"),
-  releaseStepCommandAndRemaining("stagedRelease_2_12/test"),
-  setNextVersion,
-  commitNextVersion
-)
+    checkSnapshotDependencies,
+    inquireVersions,
+    runClean
+  ) ++
+  crossReleaseStep(runTest) ++
+  Seq(
+    setReleaseVersion,
+    updateStableVersion,
+    commitReleaseVersion,
+    commitStableVersion,
+    tagRelease
+  ) ++
+  crossReleaseStep(publishArtifacts) ++
+  crossReleaseStep(releaseStepCommandAndRemaining("stagedRelease/test")) ++
+  Seq(
+    setNextVersion,
+    commitNextVersion
+  )

@@ -1,3 +1,18 @@
+# Copyright 2019 The Glow Authors
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 # The Glow Python functions
 # Note that this file is generated from the definitions in functions.yml.
 
@@ -312,6 +327,36 @@ def normalize_variant(contigName: Union[Column, str], start: Union[Column, str],
     """
     assert check_argument_types()
     output = Column(sc()._jvm.io.projectglow.functions.normalize_variant(_to_java_column(contigName), _to_java_column(start), _to_java_column(end), _to_java_column(refAllele), _to_java_column(altAlleles), refGenomePathString))
+    assert check_return_type(output)
+    return output
+
+
+def mean_substitute(array: Union[Column, str], missingValue: Union[Column, str] = None) -> Column:
+    """
+    Substitutes the missing values of a numeric array using the mean of the non-missing values. Any values that are NaN, null or equal to the missing value parameter are considered missing. See :ref:`variant-data-transformations` for more details.
+
+    Added in version 0.4.0.
+
+    Examples:
+        >>> df = spark.createDataFrame([Row(unsubstituted_values=[float('nan'), None, 0.0, 1.0, 2.0, 3.0, 4.0])])
+        >>> df.select(glow.mean_substitute('unsubstituted_values', lit(0.0)).alias('substituted_values')).collect()
+        [Row(substituted_values=[2.5, 2.5, 2.5, 1.0, 2.0, 3.0, 4.0])]
+        >>> df = spark.createDataFrame([Row(unsubstituted_values=[0, 1, 2, 3, -1, None])])
+        >>> df.select(glow.mean_substitute('unsubstituted_values').alias('substituted_values')).collect()
+        [Row(substituted_values=[0.0, 1.0, 2.0, 3.0, 1.5, 1.5])]
+
+    Args:
+        array : A numeric array that may contain missing values
+        missingValue : A value that should be considered missing. If not provided, this parameter defaults to ``-1``.
+
+    Returns:
+        A numeric array with substituted missing values
+    """
+    assert check_argument_types()
+    if missingValue is None:
+        output = Column(sc()._jvm.io.projectglow.functions.mean_substitute(_to_java_column(array)))
+    else:
+        output = Column(sc()._jvm.io.projectglow.functions.mean_substitute(_to_java_column(array), _to_java_column(missingValue)))
     assert check_return_type(output)
     return output
 
