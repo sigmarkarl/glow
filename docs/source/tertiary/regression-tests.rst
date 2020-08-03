@@ -32,11 +32,12 @@ Example
 
 .. code-block:: python
 
+  from glow.wgr.functions import reshape_for_gwas
+  import numpy as np
   import pandas as pd
   from pyspark.ml.linalg import DenseMatrix
   from pyspark.sql import Row
   from pyspark.sql.functions import col, lit
-  import numpy as np
 
   # Read in VCF file
   variants = spark.read.format('vcf').load(genotypes_vcf)
@@ -52,20 +53,18 @@ Example
   covariates['intercept'] = 1.
 
   # Read phenotypes from a CSV file
-  pd_phenotypes = pd.read_csv(continuous_phenotypes_csv, index_col=0).T
-  pd_phenotypes['pt'] = pd_phenotypes.values.tolist()
-  pd_phenotypes['trait'] = pd_phenotypes.index
-  phenotypes = spark.createDataFrame(pd_phenotypes[['trait', 'pt']])
+  pd_phenotypes = pd.read_csv(continuous_phenotypes_csv, index_col=0)
+  phenotypes = reshape_for_gwas(spark, pd_phenotypes)
 
   # Run linear regression test
   lin_reg_df = genotypes.crossJoin(phenotypes).select(
     'contigName',
     'start',
     'names',
-    'trait',
+    'label',
     glow.expand_struct(glow.linear_regression_gwas(
       col('gt'),
-      col('pt'),
+      phenotypes.values,
       lit(covariates.to_numpy())
     ))
   )
@@ -76,10 +75,10 @@ Example
      contigName='22',
      start=16050114,
      names=['rs587755077'],
-     trait='Continuous_Trait_1',
-     beta=0.13672636157787335,
-     standardError=0.1783963733160434,
-     pValue=0.44349953631952943
+     label='Continuous_Trait_1',
+     beta=0.1472251285257647,
+     standardError=0.1415532796964315,
+     pValue=0.298408742884705
    )
    assert_rows_equal(lin_reg_df.filter('contigName = 22 and start = 16050114').head(), expected_lin_reg_row)
 
@@ -186,10 +185,10 @@ Example
      contigName='22',
      start=16050114,
      names=['rs587755077'],
-     beta=0.4655549084480197,
-     oddsRatio=1.5928978561634963,
-     waldConfidenceInterval=[0.7813704896767115, 3.247273366082802],
-     pValue=0.19572327843236637
+     beta=0.6505788739813515,
+     oddsRatio=1.916650006629025,
+     waldConfidenceInterval=[0.8928977733259339, 4.114185697011577],
+     pValue=0.09477605005654555
    )
    assert_rows_equal(lrt_log_reg_df.filter('contigName = 22 and start = 16050114').head(), expected_lrt_log_reg_row)
 
@@ -197,10 +196,10 @@ Example
      contigName='22',
      start=16050114,
      names=['rs587755077'],
-     beta=0.45253994775257755,
-     oddsRatio=1.5723006796401617,
-     waldConfidenceInterval=[0.7719062301156017, 3.2026291934794795],
-     pValue=0.20086839802280376
+     beta=0.6432946160462902,
+     oddsRatio=1.9027393596251838,
+     waldConfidenceInterval=[0.8867936962411556, 4.082592248921799],
+     pValue=0.09324599164678671
    )
    assert_rows_equal(firth_log_reg_df.filter('contigName = 22 and start = 16050114').head(), expected_firth_log_reg_row)
 

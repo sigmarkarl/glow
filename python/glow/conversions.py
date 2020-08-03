@@ -35,10 +35,10 @@ def _convert_numpy_to_java_array(np_arr: np.ndarray) -> JavaArray:
     assert np_arr.dtype.type == np.double
 
     sc = SparkContext._active_spark_context
-    java_arr = sc._gateway.new_array(sc._jvm.double, np_arr.shape[0])
-    for idx, ele in enumerate(np_arr):
-        java_arr[idx] = ele.item()
-
+    size = np_arr.shape[0]
+    # Convert to big endian and serialize
+    byte_arr = np.ascontiguousarray(np_arr, '>d').tobytes()
+    java_arr = sc._jvm.io.projectglow.common.PythonUtils.doubleArrayFromBytes(size, byte_arr)
     assert check_return_type(java_arr)
     return java_arr
 
@@ -82,14 +82,14 @@ class TwoDimensionalDoubleNumpyArrayConverter(object):
         >>> df = spark.createDataFrame(str_list, StringType())
         >>> ndarray = np.array([[1.0, 2.1, 3.2], [4.3, 5.4, 6.5]])
         >>> df.withColumn("matrix", lit(ndarray)).collect()
-        [Row(value='a', matrix=DenseMatrix(2, 3, [1.0, 2.1, 3.2, 4.3, 5.4, 6.5], False)), Row(value='b', matrix=DenseMatrix(2, 3, [1.0, 2.1, 3.2, 4.3, 5.4, 6.5], False))]
+        [Row(value='a', matrix=DenseMatrix(2, 3, [1.0, 4.3, 2.1, 5.4, 3.2, 6.5], False)), Row(value='b', matrix=DenseMatrix(2, 3, [1.0, 4.3, 2.1, 5.4, 3.2, 6.5], False))]
     """
     def can_convert(self, object):
         return _is_numpy_double_array(object, dimensions=2)
 
     def convert(self, object, gateway_client):
         sc = SparkContext._active_spark_context
-        flat_arr = object.ravel()
+        flat_arr = object.ravel(order='F')
         java_arr = _convert_numpy_to_java_array(flat_arr)
         dense_matrix = sc._jvm.org.apache.spark.ml.linalg.DenseMatrix(object.shape[0],
                                                                       object.shape[1], java_arr)
